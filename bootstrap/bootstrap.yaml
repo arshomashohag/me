@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Bootstrap for the portfolio deploy pipeline. Creates the Terraform remote-state
+  backend (S3 bucket + DynamoDB lock table) and the IAM role that GitHub Actions
+  assumes via an existing GitHub OIDC provider. Run this once, in the AWS account,
+  before the deploy workflow runs. The main site infrastructure (S3 origin,
+  CloudFront, ACM, Route53) is managed separately by Terraform.
+
+Parameters:
+  GitHubSubjectPrefix:
+    Type: String
+    Description: >
+      Prefix of the OIDC 'sub' claim, matched with StringLike + a trailing '*'.
+      AWS requires the trust policy to constrain 'sub' (or 'job_workflow_ref');
+      matching on IDs alone is rejected. This account has the immutable-ID
+      subject enabled, so 'sub' uses numeric IDs, e.g.
+      repo:<owner>@<ownerId>/<repo>@<repoId> . Read the exact value from a
+      CloudTrail AssumeRoleWithWebIdentity event, or from the OIDC token's
+      'sub' claim in an Actions run. Do NOT include the trailing ':*'.
+    Default: "repo:arshomashohag@20051700/me@1331555648"
+
+  GitHubRepositoryOwnerId:
+    Type: String
+    Description: >
+      Numeric GitHub account/organization ID (the 'repository_owner_id' OIDC
+      claim), asserted alongside 'sub' as defense in depth.
+      Find it: curl -s https://api.github.com/users/<org> | jq .id
+    Default: "20051700"
+
+  GitHubRepositoryId:
+    Type: String
+    Description: >
+      Numeric GitHub repository ID (the 'repository_id' OIDC claim), asserted
+      alongside 'sub' as defense in depth.
+      Find it: curl -s https://api.github.com/repos/<org>/<repo> | jq .id
+    Default: "1331555648"
+
+  OidcProviderArn:
+    Type: String
+    Description: >
+      ARN of the EXISTING GitHub Actions OIDC provider in this account
+      (arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com).
+
+  StateBucketName:
+    Type: String
+    Description: >
+      Globally-unique name for the Terraform remote-state S3 bucket.
+    Default: arshomashohag-portfolio-tfstate
+
+  LockTableName:
+    Type: String
+    Description: Name for the DynamoDB state-lock table.
+    Default: portfolio-tf-lock
+
+  DomainName:
+    Type: String
+    Description: >
+      Apex domain the site serves. Used only to scope the deploy role's S3
+      permissions to the '<domain>-site' origin bucket.
+    Default: ""
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+
+Resources:
+  # ---- Terraform remote state ----
+  StateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref StateBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref LockTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+
+  # ---- Deploy role assumed by GitHub Actions via OIDC ----
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: portfolio-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              # AWS requires a GitHub-OIDC trust policy to constrain 'sub' (or
+              # 'job_workflow_ref') — matching on repository_id alone is
+              # rejected. This account uses the immutable-ID subject, so 'sub'
+              # carries numeric IDs (repo:owner@<id>/repo@<id>:...). Match its
+              # prefix with StringLike + '*' (branch-agnostic), and assert the
+              # ID claims too as defense in depth.
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:repository_owner_id: !Ref GitHubRepositoryOwnerId
+                token.actions.githubusercontent.com:repository_id: !Ref GitHubRepositoryId
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "${GitHubSubjectPrefix}:*"
+      Policies:
+        - PolicyName: terraform-state-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StateBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt StateBucket.Arn
+                  - !Sub "${StateBucket.Arn}/*"
+              - Sid: StateLock
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt LockTable.Arn
+
+        - PolicyName: site-infrastructure
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # S3: full management of the origin bucket + its objects, but
+              # ONLY the '<domain>-site' bucket. Terraform's aws_s3_bucket
+              # resource reads many bucket sub-configurations (lifecycle,
+              # logging, cors, replication, tagging, ...), so enumerating
+              # individual Get* actions is brittle. Scope by resource instead:
+              # every S3 action, restricted to this one bucket.
+              - Sid: SiteBucketManage
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !If
+                    - HasDomain
+                    - !Sub "arn:aws:s3:::${DomainName}-site"
+                    - "arn:aws:s3:::*-site"
+                  - !If
+                    - HasDomain
+                    - !Sub "arn:aws:s3:::${DomainName}-site/*"
+                    - "arn:aws:s3:::*-site/*"
+              # CloudFront, ACM and Route53 resources are not meaningfully
+              # resource-scopable for the create/read/update calls Terraform
+              # makes (ARNs are unknown until created, and many read/tag/list
+              # calls have no resource-level scoping). Enumerating exact actions
+              # is brittle — Terraform reads config/tags for drift detection and
+              # will fail the moment an un-listed Get*/List* is called. Scope to
+              # these three services in full instead; the role can touch nothing
+              # else in the account.
+              - Sid: CloudFront
+                Effect: Allow
+                Action: cloudfront:*
+                Resource: "*"
+              - Sid: Acm
+                Effect: Allow
+                Action: acm:*
+                Resource: "*"
+              - Sid: Route53
+                Effect: Allow
+                Action: route53:*
+                Resource: "*"
+
+Outputs:
+  StateBucketName:
+    Description: Terraform state bucket (set as GitHub variable TF_STATE_BUCKET).
+    Value: !Ref StateBucket
+
+  LockTableName:
+    Description: State-lock table (set as GitHub variable TF_STATE_LOCK_TABLE).
+    Value: !Ref LockTable
+
+  DeployRoleArn:
+    Description: Deploy role ARN (set as GitHub secret AWS_DEPLOY_ROLE_ARN).
+    Value: !GetAtt DeployRole.Arn

@@ -1,8 +1,14 @@
 name: Deploy site
 
-# Deploys the static portfolio to AWS: converges infrastructure with Terraform
-# (S3 + CloudFront + ACM + Route53), syncs the site files to S3, and
-# invalidates the CloudFront cache.
+# Deploys (or tears down) the static portfolio on AWS.
+#
+# apply  : converges infrastructure with Terraform (S3 + CloudFront + ACM +
+#          Route53), syncs the site files to S3, invalidates the CloudFront cache.
+# destroy: runs `terraform destroy` to remove the infrastructure.
+#
+# Push to main always means APPLY. DESTROY is only available via manual
+# "Run workflow" dispatch. Both apply and destroy require a typed confirmation
+# that matches the selected action before any change is made.
 #
 # Required GitHub configuration (Settings → Secrets and variables → Actions):
 #   Secrets:
@@ -14,7 +20,7 @@ name: Deploy site
 #     TF_STATE_BUCKET       S3 bucket holding Terraform remote state
 #     TF_STATE_LOCK_TABLE   DynamoDB table used for state locking
 #   (TF_STATE_BUCKET / TF_STATE_LOCK_TABLE are created by the one-time
-#    bootstrap described in README.md.)
+#    bootstrap described in bootstrap/README.md.)
 
 on:
   push:
@@ -27,6 +33,19 @@ on:
       - "terraform/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action to run"
+        type: choice
+        default: apply
+        options:
+          - apply
+          - destroy
+      confirm:
+        description: "Type the action name to confirm (apply or destroy). Must match the selection above."
+        type: string
+        required: true
+        default: ""
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -44,7 +63,24 @@ jobs:
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_domain_name: ${{ vars.DOMAIN_NAME }}
       TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+      # A push to main is always an apply; a manual run uses the chosen action.
+      ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'apply' }}
     steps:
+      - name: Permission gate — confirm the requested action
+        run: |
+          echo "Requested action: ${ACTION}"
+          # Pushes to main are implicitly confirmed applies. Manual dispatches
+          # must type a confirmation that matches the selected action, so a
+          # destroy can never happen without an explicit, matching confirm.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CONFIRM="${{ inputs.confirm }}"
+            if [ "${CONFIRM}" != "${ACTION}" ]; then
+              echo "::error::Confirmation '${CONFIRM}' does not match action '${ACTION}'. Type the action name exactly to proceed."
+              exit 1
+            fi
+            echo "Confirmation matches — proceeding with ${ACTION}."
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -68,10 +104,17 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}"
 
       - name: Terraform apply
+        if: env.ACTION == 'apply'
         working-directory: terraform
         run: terraform apply -input=false -auto-approve
 
+      - name: Terraform destroy
+        if: env.ACTION == 'destroy'
+        working-directory: terraform
+        run: terraform destroy -input=false -auto-approve
+
       - name: Capture Terraform outputs
+        if: env.ACTION == 'apply'
         id: tf
         working-directory: terraform
         run: |
@@ -79,6 +122,7 @@ jobs:
           echo "distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> "$GITHUB_OUTPUT"
 
       - name: Sync site to S3
+        if: env.ACTION == 'apply'
         env:
           BUCKET: ${{ steps.tf.outputs.bucket }}
         run: |
@@ -114,6 +158,7 @@ jobs:
           done
 
       - name: Invalidate CloudFront cache
+        if: env.ACTION == 'apply'
         run: |
           aws cloudfront create-invalidation \
             --distribution-id "${{ steps.tf.outputs.distribution_id }}" \

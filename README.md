@@ -60,28 +60,17 @@ invalidates the CloudFront cache.
 **Domain, hosted zone, and region are read from GitHub Actions variables** and
 passed to Terraform as `TF_VAR_*`, so nothing environment-specific is committed.
 
-#### One-time bootstrap (run locally with AWS admin credentials)
+#### One-time bootstrap
 
-1. **Terraform remote state** — create an S3 bucket and DynamoDB lock table
-   (names are your choice; you'll reference them as GitHub variables):
+The Terraform remote-state backend (S3 bucket + DynamoDB lock table) and the
+GitHub OIDC deploy role are created by a CloudFormation stack you run once in
+your AWS account. See [`bootstrap/README.md`](bootstrap/README.md) for the
+`aws cloudformation deploy` command and parameters. Its outputs
+(`DeployRoleArn`, `StateBucketName`, `LockTableName`) feed directly into the
+GitHub configuration below.
 
-   ```bash
-   aws s3api create-bucket --bucket <state-bucket> --region <region> \
-     --create-bucket-configuration LocationConstraint=<region>
-   aws s3api put-bucket-versioning --bucket <state-bucket> \
-     --versioning-configuration Status=Enabled
-   aws dynamodb create-table --table-name <lock-table> \
-     --attribute-definitions AttributeName=LockID,AttributeType=S \
-     --key-schema AttributeName=LockID,KeyType=HASH \
-     --billing-mode PAY_PER_REQUEST --region <region>
-   ```
-
-2. **GitHub OIDC provider + deploy role** — create the IAM OIDC provider for
-   `token.actions.githubusercontent.com` and an IAM role whose trust policy
-   allows this repository to assume it (condition on
-   `token.actions.githubusercontent.com:sub` = `repo:<owner>/<repo>:*`). Grant
-   the role permissions for S3, CloudFront, ACM, Route53, and the state
-   bucket/table. Note the role ARN.
+The stack references an **existing** GitHub OIDC provider; create one first if
+your account doesn't have it (commands are in the bootstrap README).
 
 #### GitHub configuration
 
@@ -95,12 +84,21 @@ In **Settings → Secrets and variables → Actions**:
   - `TF_STATE_BUCKET` — the state bucket from bootstrap step 1
   - `TF_STATE_LOCK_TABLE` — the lock table from bootstrap step 1
 
-#### Deploying
+#### Deploying and destroying
 
-Push to `main` (touching site files or `terraform/`) or run the workflow
-manually via **Actions → Deploy site → Run workflow**. The workflow runs
-`terraform apply`, syncs the files, and invalidates the cache. The site
-publishes at `https://<DOMAIN_NAME>`.
+- **Push to `main`** (touching site files or `terraform/`) runs an **apply**
+  automatically: `terraform apply`, sync files, invalidate cache. The site
+  publishes at `https://<DOMAIN_NAME>`.
+- **Manual run** via **Actions → Deploy site → Run workflow** exposes two
+  inputs:
+  - **`action`** — a dropdown to choose **`apply`** or **`destroy`**
+    (destroy is only available here, never from a push).
+  - **`confirm`** — a permission gate: you must type the action name
+    (`apply` or `destroy`) exactly, matching the dropdown, or the run fails
+    before any AWS change is made.
+
+  `destroy` runs `terraform destroy` and skips the file sync / cache
+  invalidation.
 
 To apply the infrastructure locally instead:
 
