@@ -1,0 +1,87 @@
+# Bootstrap (CloudFormation)
+
+One-time prerequisites for the deploy pipeline, as a CloudFormation stack you
+run **directly in your AWS account**. It creates:
+
+- The **Terraform remote-state backend** — an S3 bucket (versioned, encrypted,
+  private) and a DynamoDB lock table.
+- The **deploy IAM role** that GitHub Actions assumes via OIDC, with a
+  least-privilege policy scoped to the state backend and the site
+  infrastructure (S3 origin bucket, CloudFront, ACM, Route53).
+
+It **references an existing** GitHub OIDC provider (passed as a parameter) — it
+does not create one, since an account may only have a single provider for
+`token.actions.githubusercontent.com`.
+
+## Prerequisites
+
+- A GitHub Actions OIDC provider already exists in the account. Find its ARN:
+
+  ```bash
+  aws iam list-open-id-connect-providers
+  # -> arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com
+  ```
+
+  If you don't have one yet, create it first:
+
+  ```bash
+  aws iam create-open-id-connect-provider \
+    --url https://token.actions.githubusercontent.com \
+    --client-id-list sts.amazonaws.com
+  ```
+
+## Deploy the stack
+
+```bash
+aws cloudformation deploy \
+  --stack-name portfolio-bootstrap \
+  --template-file bootstrap/bootstrap.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1 \
+  --parameter-overrides \
+    GitHubOrg=arshomashohag \
+    GitHubRepo=me \
+    OidcProviderArn=arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com \
+    StateBucketName=arshomashohag-portfolio-tfstate \
+    LockTableName=portfolio-tf-lock \
+    DomainName=example.com
+```
+
+Notes:
+
+- `--capabilities CAPABILITY_NAMED_IAM` is required because the stack creates a
+  named IAM role (`portfolio-deploy`).
+- `DomainName` is optional; if set, the deploy role's S3 permissions are scoped
+  to the `<domain>-site` origin bucket. Leave it empty to allow any `*-site`
+  bucket.
+- To restrict which branch may deploy, pass
+  `GitHubRefCondition=repo:arshomashohag/me:ref:refs/heads/main`. The default
+  (`*`) allows any branch in the repo.
+
+## After it completes
+
+Read the stack outputs and wire them into GitHub
+(**Settings → Secrets and variables → Actions**):
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name portfolio-bootstrap \
+  --region us-east-1 \
+  --query 'Stacks[0].Outputs' --output table
+```
+
+| Stack output      | GitHub setting                       | Kind     |
+| ----------------- | ------------------------------------ | -------- |
+| `DeployRoleArn`   | `AWS_DEPLOY_ROLE_ARN`                | secret   |
+| `StateBucketName` | `TF_STATE_BUCKET`                    | variable |
+| `LockTableName`   | `TF_STATE_LOCK_TABLE`                | variable |
+
+Then set the remaining GitHub variables (`AWS_REGION`, `DOMAIN_NAME`,
+`ROUTE53_ZONE_ID`) as described in the top-level `README.md`, and the deploy
+workflow can run.
+
+## Tearing down
+
+The state bucket has `DeletionPolicy: Retain`, so deleting the stack leaves the
+bucket (and your Terraform state) in place. Empty and delete it manually if you
+really want it gone.

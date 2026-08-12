@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Bootstrap for the portfolio deploy pipeline. Creates the Terraform remote-state
+  backend (S3 bucket + DynamoDB lock table) and the IAM role that GitHub Actions
+  assumes via an existing GitHub OIDC provider. Run this once, in the AWS account,
+  before the deploy workflow runs. The main site infrastructure (S3 origin,
+  CloudFront, ACM, Route53) is managed separately by Terraform.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization or user that owns the repository.
+    Default: arshomashohag
+
+  GitHubRepo:
+    Type: String
+    Description: Repository name (without the owner).
+    Default: me
+
+  GitHubRefCondition:
+    Type: String
+    Description: >
+      Which refs may assume the deploy role, matched against the OIDC 'sub'
+      claim. Use 'repo:ORG/REPO:*' for any branch, or
+      'repo:ORG/REPO:ref:refs/heads/main' to restrict to main only.
+    Default: "*"
+
+  OidcProviderArn:
+    Type: String
+    Description: >
+      ARN of the EXISTING GitHub Actions OIDC provider in this account
+      (arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com).
+
+  StateBucketName:
+    Type: String
+    Description: >
+      Globally-unique name for the Terraform remote-state S3 bucket.
+    Default: arshomashohag-portfolio-tfstate
+
+  LockTableName:
+    Type: String
+    Description: Name for the DynamoDB state-lock table.
+    Default: portfolio-tf-lock
+
+  DomainName:
+    Type: String
+    Description: >
+      Apex domain the site serves. Used only to scope the deploy role's S3
+      permissions to the '<domain>-site' origin bucket.
+    Default: ""
+
+Conditions:
+  RestrictToRef: !Not [!Equals [!Ref GitHubRefCondition, "*"]]
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+
+Resources:
+  # ---- Terraform remote state ----
+  StateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref StateBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref LockTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+
+  # ---- Deploy role assumed by GitHub Actions via OIDC ----
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: portfolio-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  !If
+                    - RestrictToRef
+                    - !Ref GitHubRefCondition
+                    - !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+      Policies:
+        - PolicyName: terraform-state-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StateBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt StateBucket.Arn
+                  - !Sub "${StateBucket.Arn}/*"
+              - Sid: StateLock
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt LockTable.Arn
+
+        - PolicyName: site-infrastructure
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # S3: manage the origin bucket + upload site files.
+              - Sid: SiteBucketManage
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:ListBucket
+                  - s3:GetBucket*
+                  - s3:PutBucket*
+                  - s3:DeleteBucketPolicy
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetAccelerateConfiguration
+                  - s3:GetBucketObjectLockConfiguration
+                Resource:
+                  - !If
+                    - HasDomain
+                    - !Sub "arn:aws:s3:::${DomainName}-site"
+                    - "arn:aws:s3:::*-site"
+                  - !If
+                    - HasDomain
+                    - !Sub "arn:aws:s3:::${DomainName}-site/*"
+                    - "arn:aws:s3:::*-site/*"
+              # CloudFront, ACM, Route53 are not resource-scopable in a
+              # meaningful way for create/read/update here; grant the specific
+              # actions Terraform needs across the service.
+              - Sid: CloudFront
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateDistribution
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:DeleteDistribution
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - cloudfront:ListDistributions
+                  - cloudfront:TagResource
+                  - cloudfront:UntagResource
+                  - cloudfront:ListTagsForResource
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetInvalidation
+                  - cloudfront:CreateOriginAccessControl
+                  - cloudfront:UpdateOriginAccessControl
+                  - cloudfront:DeleteOriginAccessControl
+                  - cloudfront:GetOriginAccessControl
+                  - cloudfront:ListOriginAccessControls
+                Resource: "*"
+              - Sid: Acm
+                Effect: Allow
+                Action:
+                  - acm:RequestCertificate
+                  - acm:DeleteCertificate
+                  - acm:DescribeCertificate
+                  - acm:ListCertificates
+                  - acm:ListTagsForCertificate
+                  - acm:AddTagsToCertificate
+                Resource: "*"
+              - Sid: Route53
+                Effect: Allow
+                Action:
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetChange
+                  - route53:ListResourceRecordSets
+                  - route53:GetHostedZone
+                Resource: "*"
+
+Outputs:
+  StateBucketName:
+    Description: Terraform state bucket (set as GitHub variable TF_STATE_BUCKET).
+    Value: !Ref StateBucket
+
+  LockTableName:
+    Description: State-lock table (set as GitHub variable TF_STATE_LOCK_TABLE).
+    Value: !Ref LockTable
+
+  DeployRoleArn:
+    Description: Deploy role ARN (set as GitHub secret AWS_DEPLOY_ROLE_ARN).
+    Value: !GetAtt DeployRole.Arn
