@@ -8,23 +8,21 @@ Description: >
   CloudFront, ACM, Route53) is managed separately by Terraform.
 
 Parameters:
-  GitHubOrg:
-    Type: String
-    Description: GitHub organization or user that owns the repository.
-    Default: arshomashohag
-
-  GitHubRepo:
-    Type: String
-    Description: Repository name (without the owner).
-    Default: me
-
-  GitHubRefCondition:
+  GitHubRepositoryOwnerId:
     Type: String
     Description: >
-      Which refs may assume the deploy role, matched against the OIDC 'sub'
-      claim. Use 'repo:ORG/REPO:*' for any branch, or
-      'repo:ORG/REPO:ref:refs/heads/main' to restrict to main only.
-    Default: "*"
+      Numeric GitHub account/organization ID (the 'repository_owner_id' OIDC
+      claim). This account has the immutable-ID subject enabled, so the trust
+      policy matches on stable numeric IDs rather than the org/repo path.
+      Find it: curl -s https://api.github.com/users/<org> | jq .id
+    Default: "20051700"
+
+  GitHubRepositoryId:
+    Type: String
+    Description: >
+      Numeric GitHub repository ID (the 'repository_id' OIDC claim).
+      Find it: curl -s https://api.github.com/repos/<org>/<repo> | jq .id
+    Default: "1331555648"
 
   OidcProviderArn:
     Type: String
@@ -51,7 +49,6 @@ Parameters:
     Default: ""
 
 Conditions:
-  RestrictToRef: !Not [!Equals [!Ref GitHubRefCondition, "*"]]
   HasDomain: !Not [!Equals [!Ref DomainName, ""]]
 
 Resources:
@@ -101,13 +98,13 @@ Resources:
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
+                # This account uses GitHub's immutable-ID subject, so the 'sub'
+                # claim carries numeric IDs (e.g. repo:owner@<id>/repo@<id>:...)
+                # rather than the org/repo path. Match the stable ID claims
+                # instead of 'sub' — branch-agnostic and rename-proof.
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-              StringLike:
-                token.actions.githubusercontent.com:sub:
-                  !If
-                    - RestrictToRef
-                    - !Ref GitHubRefCondition
-                    - !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+                token.actions.githubusercontent.com:repository_owner_id: !Ref GitHubRepositoryOwnerId
+                token.actions.githubusercontent.com:repository_id: !Ref GitHubRepositoryId
       Policies:
         - PolicyName: terraform-state-access
           PolicyDocument:

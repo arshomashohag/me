@@ -32,6 +32,17 @@ does not create one, since an account may only have a single provider for
 
 ## Deploy the stack
 
+This account has GitHub's **immutable-ID subject** enabled, so the OIDC `sub`
+claim carries numeric IDs (e.g.
+`repo:arshomashohag@20051700/me@1331555648:ref:...`) rather than the org/repo
+path. The trust policy therefore matches on the stable **`repository_owner_id`**
+and **`repository_id`** claims. Look these up first:
+
+```bash
+curl -s https://api.github.com/users/arshomashohag | jq .id   # owner id
+curl -s https://api.github.com/repos/arshomashohag/me | jq .id # repo id
+```
+
 ```bash
 aws cloudformation deploy \
   --stack-name portfolio-bootstrap \
@@ -39,8 +50,8 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region us-east-1 \
   --parameter-overrides \
-    GitHubOrg=arshomashohag \
-    GitHubRepo=me \
+    GitHubRepositoryOwnerId=20051700 \
+    GitHubRepositoryId=1331555648 \
     OidcProviderArn=arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com \
     StateBucketName=arshomashohag-portfolio-tfstate \
     LockTableName=portfolio-tf-lock \
@@ -51,12 +62,12 @@ Notes:
 
 - `--capabilities CAPABILITY_NAMED_IAM` is required because the stack creates a
   named IAM role (`portfolio-deploy`).
+- Matching on the ID claims is **branch-agnostic and rename-proof** — any branch
+  in this repo can assume the role, and it keeps working if the repo or owner is
+  renamed.
 - `DomainName` is optional; if set, the deploy role's S3 permissions are scoped
   to the `<domain>-site` origin bucket. Leave it empty to allow any `*-site`
   bucket.
-- To restrict which branch may deploy, pass
-  `GitHubRefCondition=repo:arshomashohag/me:ref:refs/heads/main`. The default
-  (`*`) allows any branch in the repo.
 
 ## After it completes
 
