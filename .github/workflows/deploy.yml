@@ -135,6 +135,7 @@ jobs:
             --include "index.html" \
             --include "styles.css" \
             --include "script.js" \
+            --include "favicon.svg" \
             --include "fonts/*"
 
           # Long-cache the immutable font assets.
@@ -144,13 +145,14 @@ jobs:
             --content-type "font/woff2" \
             --cache-control "public, max-age=31536000, immutable"
 
-          # Keep HTML/CSS/JS fresh with a short TTL.
+          # Keep HTML/CSS/JS/favicon fresh with a short TTL.
           declare -A types=(
             [index.html]="text/html; charset=utf-8"
             [styles.css]="text/css; charset=utf-8"
             [script.js]="text/javascript; charset=utf-8"
+            [favicon.svg]="image/svg+xml"
           )
-          for f in index.html styles.css script.js; do
+          for f in index.html styles.css script.js favicon.svg; do
             aws s3 cp "s3://${BUCKET}/${f}" "s3://${BUCKET}/${f}" \
               --metadata-directive REPLACE \
               --content-type "${types[$f]}" \
