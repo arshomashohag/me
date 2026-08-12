@@ -5,12 +5,23 @@ variable "aws_region" {
 }
 
 variable "domain_name" {
-  description = "Apex domain to serve the site on (e.g. example.com). Read from the GitHub Actions variable DOMAIN_NAME via TF_VAR_domain_name."
+  description = "Apex/zone domain (e.g. example.com) that owns the Route53 hosted zone. The site is served on <site_host>.<domain_name>. Read from the GitHub Actions variable DOMAIN_NAME via TF_VAR_domain_name."
   type        = string
 
   validation {
     condition     = length(trimspace(var.domain_name)) > 0
     error_message = "domain_name must not be empty."
+  }
+}
+
+variable "site_host" {
+  description = "Subdomain label the site is served on, prepended to domain_name (e.g. 'shohag' -> shohag.example.com). Read from the GitHub Actions variable SITE_HOST via TF_VAR_site_host."
+  type        = string
+  default     = "shohag"
+
+  validation {
+    condition     = length(trimspace(var.site_host)) > 0
+    error_message = "site_host must not be empty."
   }
 }
 

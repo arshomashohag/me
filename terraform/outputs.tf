@@ -15,5 +15,5 @@ output "cloudfront_domain_name" {
 
 output "site_url" {
   description = "Public URL of the deployed site."
-  value       = "https://${var.domain_name}"
+  value       = "https://${local.site_fqdn}"
 }

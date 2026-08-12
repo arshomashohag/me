@@ -51,9 +51,10 @@ invalidates the CloudFront cache.
 
 - Private **S3** bucket (`<domain>-site`) as origin — reachable only through
   CloudFront via Origin Access Control (OAC).
-- **CloudFront** distribution serving the apex domain over HTTPS, with an
-  **ACM** certificate (DNS-validated, in `us-east-1` as CloudFront requires).
-- **Route53** apex `A`/`AAAA` alias records into your existing hosted zone.
+- **CloudFront** distribution serving the site subdomain
+  (`<SITE_HOST>.<DOMAIN_NAME>`) over HTTPS, with an **ACM** certificate
+  (DNS-validated, in `us-east-1` as CloudFront requires).
+- **Route53** `CNAME` record for the subdomain, into your existing hosted zone.
 - CI authenticates to AWS with **GitHub OIDC** — no long-lived AWS keys are
   stored in GitHub.
 
@@ -79,7 +80,10 @@ In **Settings → Secrets and variables → Actions**:
 - **Secret** `AWS_DEPLOY_ROLE_ARN` — the deploy role ARN from bootstrap step 2.
 - **Variables:**
   - `AWS_REGION` — e.g. `us-east-1`
-  - `DOMAIN_NAME` — apex domain, e.g. `example.com`
+  - `DOMAIN_NAME` — zone/apex domain that owns the hosted zone, e.g. `example.com`
+  - `SITE_HOST` — subdomain label to serve on (optional; defaults to `shohag`).
+    The site is published at `<SITE_HOST>.<DOMAIN_NAME>`, e.g.
+    `shohag.example.com`.
   - `ROUTE53_ZONE_ID` — existing hosted zone ID for `DOMAIN_NAME`
   - `TF_STATE_BUCKET` — the state bucket from bootstrap step 1
   - `TF_STATE_LOCK_TABLE` — the lock table from bootstrap step 1
@@ -88,7 +92,8 @@ In **Settings → Secrets and variables → Actions**:
 
 - **Push to `main`** (touching site files or `terraform/`) runs an **apply**
   automatically: `terraform apply`, sync files, invalidate cache. The site
-  publishes at `https://<DOMAIN_NAME>`.
+  publishes at `https://<SITE_HOST>.<DOMAIN_NAME>` (e.g.
+  `https://shohag.example.com`).
 - **Manual run** via **Actions → Deploy site → Run workflow** exposes two
   inputs:
   - **`action`** — a dropdown to choose **`apply`** or **`destroy`**
@@ -110,6 +115,7 @@ terraform init \
   -backend-config="region=<region>" \
   -backend-config="key=portfolio/terraform.tfstate"
 export TF_VAR_domain_name=example.com
+export TF_VAR_site_host=shohag
 export TF_VAR_route53_zone_id=Z0123456789ABCDEFGHIJ
 export TF_VAR_aws_region=us-east-1
 terraform apply

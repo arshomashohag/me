@@ -10,10 +10,10 @@ resource "aws_cloudfront_origin_access_control" "site" {
 resource "aws_cloudfront_distribution" "site" {
   enabled             = true
   is_ipv6_enabled     = true
-  comment             = "${var.domain_name} static portfolio"
+  comment             = "${local.site_fqdn} static portfolio"
   default_root_object = var.default_root_object
   price_class         = var.price_class
-  aliases             = [var.domain_name]
+  aliases             = [local.site_fqdn]
 
   origin {
     domain_name              = aws_s3_bucket.site.bucket_regional_domain_name

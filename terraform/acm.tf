@@ -1,7 +1,7 @@
-# ACM certificate for the apex domain. Must be in us-east-1 for CloudFront.
+# ACM certificate for the site subdomain. Must be in us-east-1 for CloudFront.
 resource "aws_acm_certificate" "site" {
   provider          = aws.us_east_1
-  domain_name       = var.domain_name
+  domain_name       = local.site_fqdn
   validation_method = "DNS"
 
   lifecycle {
