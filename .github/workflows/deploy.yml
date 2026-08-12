@@ -1,0 +1,120 @@
+name: Deploy site
+
+# Deploys the static portfolio to AWS: converges infrastructure with Terraform
+# (S3 + CloudFront + ACM + Route53), syncs the site files to S3, and
+# invalidates the CloudFront cache.
+#
+# Required GitHub configuration (Settings → Secrets and variables → Actions):
+#   Secrets:
+#     AWS_DEPLOY_ROLE_ARN   IAM role ARN that CI assumes via OIDC
+#   Variables:
+#     AWS_REGION            e.g. us-east-1
+#     DOMAIN_NAME           apex domain, e.g. example.com
+#     ROUTE53_ZONE_ID       existing hosted zone ID for DOMAIN_NAME
+#     TF_STATE_BUCKET       S3 bucket holding Terraform remote state
+#     TF_STATE_LOCK_TABLE   DynamoDB table used for state locking
+#   (TF_STATE_BUCKET / TF_STATE_LOCK_TABLE are created by the one-time
+#    bootstrap described in README.md.)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "styles.css"
+      - "script.js"
+      - "fonts/**"
+      - "terraform/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # required for OIDC role assumption
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_domain_name: ${{ vars.DOMAIN_NAME }}
+      TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.0"
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -input=false -auto-approve
+
+      - name: Capture Terraform outputs
+        id: tf
+        working-directory: terraform
+        run: |
+          echo "bucket=$(terraform output -raw site_bucket)" >> "$GITHUB_OUTPUT"
+          echo "distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Sync site to S3
+        env:
+          BUCKET: ${{ steps.tf.outputs.bucket }}
+        run: |
+          # Upload only the site files, and prune anything else from the
+          # bucket. A single --delete sync avoids one pass deleting what an
+          # earlier pass uploaded.
+          aws s3 sync . "s3://${BUCKET}" \
+            --delete \
+            --exclude "*" \
+            --include "index.html" \
+            --include "styles.css" \
+            --include "script.js" \
+            --include "fonts/*"
+
+          # Long-cache the immutable font assets.
+          aws s3 cp "s3://${BUCKET}/fonts/" "s3://${BUCKET}/fonts/" \
+            --recursive \
+            --metadata-directive REPLACE \
+            --content-type "font/woff2" \
+            --cache-control "public, max-age=31536000, immutable"
+
+          # Keep HTML/CSS/JS fresh with a short TTL.
+          declare -A types=(
+            [index.html]="text/html; charset=utf-8"
+            [styles.css]="text/css; charset=utf-8"
+            [script.js]="text/javascript; charset=utf-8"
+          )
+          for f in index.html styles.css script.js; do
+            aws s3 cp "s3://${BUCKET}/${f}" "s3://${BUCKET}/${f}" \
+              --metadata-directive REPLACE \
+              --content-type "${types[$f]}" \
+              --cache-control "public, max-age=300, must-revalidate"
+          done
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.tf.outputs.distribution_id }}" \
+            --paths "/*"
