@@ -5,9 +5,11 @@ run **directly in your AWS account**. It creates:
 
 - The **Terraform remote-state backend** — an S3 bucket (versioned, encrypted,
   private) and a DynamoDB lock table.
-- The **deploy IAM role** that GitHub Actions assumes via OIDC, with a
-  least-privilege policy scoped to the state backend and the site
-  infrastructure (S3 origin bucket, CloudFront, ACM, Route53).
+- The **deploy IAM role** that GitHub Actions assumes via OIDC. Its policy is
+  least-privilege by **resource** where that is meaningful — state bucket/table
+  and the `<domain>-site` S3 bucket are scoped by ARN — and by **service** for
+  CloudFront/ACM/Route53, whose create/read/tag calls are not resource-scopable.
+  The role can touch nothing else in the account.
 
 It **references an existing** GitHub OIDC provider (passed as a parameter) — it
 does not create one, since an account may only have a single provider for
