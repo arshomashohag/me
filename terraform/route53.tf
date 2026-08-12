@@ -1,25 +1,10 @@
-# Apex alias records pointing at the CloudFront distribution.
-# CloudFront's hosted zone ID is the fixed global value Z2FDTNDATAQYW2.
-resource "aws_route53_record" "apex_a" {
+# CNAME for the site subdomain pointing at the CloudFront distribution.
+# A CNAME is valid here because the site is served on a subdomain (a CNAME
+# cannot exist at a zone apex — that is why an apex would need an alias record).
+resource "aws_route53_record" "site_cname" {
   zone_id = var.route53_zone_id
-  name    = var.domain_name
-  type    = "A"
-
-  alias {
-    name                   = aws_cloudfront_distribution.site.domain_name
-    zone_id                = aws_cloudfront_distribution.site.hosted_zone_id
-    evaluate_target_health = false
-  }
-}
-
-resource "aws_route53_record" "apex_aaaa" {
-  zone_id = var.route53_zone_id
-  name    = var.domain_name
-  type    = "AAAA"
-
-  alias {
-    name                   = aws_cloudfront_distribution.site.domain_name
-    zone_id                = aws_cloudfront_distribution.site.hosted_zone_id
-    evaluate_target_health = false
-  }
+  name    = local.site_fqdn
+  type    = "CNAME"
+  ttl     = 300
+  records = [aws_cloudfront_distribution.site.domain_name]
 }

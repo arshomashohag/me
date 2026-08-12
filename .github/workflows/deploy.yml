@@ -62,6 +62,9 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_domain_name: ${{ vars.DOMAIN_NAME }}
+      # Optional: defaults to the Terraform variable default ("shohag") when the
+      # SITE_HOST GitHub variable is unset, so the site serves shohag.<domain>.
+      TF_VAR_site_host: ${{ vars.SITE_HOST || 'shohag' }}
       TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
       # A push to main is always an apply; a manual run uses the chosen action.
       ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'apply' }}
