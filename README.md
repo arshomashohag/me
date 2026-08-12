@@ -84,12 +84,21 @@ In **Settings → Secrets and variables → Actions**:
   - `TF_STATE_BUCKET` — the state bucket from bootstrap step 1
   - `TF_STATE_LOCK_TABLE` — the lock table from bootstrap step 1
 
-#### Deploying
+#### Deploying and destroying
 
-Push to `main` (touching site files or `terraform/`) or run the workflow
-manually via **Actions → Deploy site → Run workflow**. The workflow runs
-`terraform apply`, syncs the files, and invalidates the cache. The site
-publishes at `https://<DOMAIN_NAME>`.
+- **Push to `main`** (touching site files or `terraform/`) runs an **apply**
+  automatically: `terraform apply`, sync files, invalidate cache. The site
+  publishes at `https://<DOMAIN_NAME>`.
+- **Manual run** via **Actions → Deploy site → Run workflow** exposes two
+  inputs:
+  - **`action`** — a dropdown to choose **`apply`** or **`destroy`**
+    (destroy is only available here, never from a push).
+  - **`confirm`** — a permission gate: you must type the action name
+    (`apply` or `destroy`) exactly, matching the dropdown, or the run fails
+    before any AWS change is made.
+
+  `destroy` runs `terraform destroy` and skips the file sync / cache
+  invalidation.
 
 To apply the infrastructure locally instead:
 
