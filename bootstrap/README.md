@@ -34,9 +34,14 @@ does not create one, since an account may only have a single provider for
 
 This account has GitHub's **immutable-ID subject** enabled, so the OIDC `sub`
 claim carries numeric IDs (e.g.
-`repo:arshomashohag@20051700/me@1331555648:ref:...`) rather than the org/repo
-path. The trust policy therefore matches on the stable **`repository_owner_id`**
-and **`repository_id`** claims. Look these up first:
+`repo:arshomashohag@20051700/me@1331555648:ref:refs/heads/main`) rather than the
+org/repo path. AWS requires a GitHub-OIDC trust policy to constrain `sub` (or
+`job_workflow_ref`), so the policy matches the **`sub` prefix** with `StringLike`
+and additionally asserts the `repository_owner_id` / `repository_id` claims.
+
+Read the exact `sub` prefix from a CloudTrail `AssumeRoleWithWebIdentity` event
+(the `userName` / `principalId` field), or decode the OIDC token in an Actions
+run. It is everything before the final `:ref:...` segment. Also look up the IDs:
 
 ```bash
 curl -s https://api.github.com/users/arshomashohag | jq .id   # owner id
@@ -50,6 +55,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --region us-east-1 \
   --parameter-overrides \
+    GitHubSubjectPrefix='repo:arshomashohag@20051700/me@1331555648' \
     GitHubRepositoryOwnerId=20051700 \
     GitHubRepositoryId=1331555648 \
     OidcProviderArn=arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com \
@@ -62,9 +68,9 @@ Notes:
 
 - `--capabilities CAPABILITY_NAMED_IAM` is required because the stack creates a
   named IAM role (`portfolio-deploy`).
-- Matching on the ID claims is **branch-agnostic and rename-proof** — any branch
-  in this repo can assume the role, and it keeps working if the repo or owner is
-  renamed.
+- `GitHubSubjectPrefix` must **not** include the trailing `:*` — the template
+  appends it. The `StringLike` match is **branch-agnostic** (any branch in the
+  repo can deploy).
 - `DomainName` is optional; if set, the deploy role's S3 permissions are scoped
   to the `<domain>-site` origin bucket. Leave it empty to allow any `*-site`
   bucket.
