@@ -60,28 +60,17 @@ invalidates the CloudFront cache.
 **Domain, hosted zone, and region are read from GitHub Actions variables** and
 passed to Terraform as `TF_VAR_*`, so nothing environment-specific is committed.
 
-#### One-time bootstrap (run locally with AWS admin credentials)
+#### One-time bootstrap
 
-1. **Terraform remote state** — create an S3 bucket and DynamoDB lock table
-   (names are your choice; you'll reference them as GitHub variables):
+The Terraform remote-state backend (S3 bucket + DynamoDB lock table) and the
+GitHub OIDC deploy role are created by a CloudFormation stack you run once in
+your AWS account. See [`bootstrap/README.md`](bootstrap/README.md) for the
+`aws cloudformation deploy` command and parameters. Its outputs
+(`DeployRoleArn`, `StateBucketName`, `LockTableName`) feed directly into the
+GitHub configuration below.
 
-   ```bash
-   aws s3api create-bucket --bucket <state-bucket> --region <region> \
-     --create-bucket-configuration LocationConstraint=<region>
-   aws s3api put-bucket-versioning --bucket <state-bucket> \
-     --versioning-configuration Status=Enabled
-   aws dynamodb create-table --table-name <lock-table> \
-     --attribute-definitions AttributeName=LockID,AttributeType=S \
-     --key-schema AttributeName=LockID,KeyType=HASH \
-     --billing-mode PAY_PER_REQUEST --region <region>
-   ```
-
-2. **GitHub OIDC provider + deploy role** — create the IAM OIDC provider for
-   `token.actions.githubusercontent.com` and an IAM role whose trust policy
-   allows this repository to assume it (condition on
-   `token.actions.githubusercontent.com:sub` = `repo:<owner>/<repo>:*`). Grant
-   the role permissions for S3, CloudFront, ACM, Route53, and the state
-   bucket/table. Note the role ARN.
+The stack references an **existing** GitHub OIDC provider; create one first if
+your account doesn't have it (commands are in the bootstrap README).
 
 #### GitHub configuration
 
