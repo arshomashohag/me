@@ -11,6 +11,10 @@
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="script.js" defer></script>
+  <!-- AI chatbot widget (third-party, loaded from the chatbot service). Async
+       so it never blocks page render; CORS for its API/chat calls is governed
+       by the chatbot service's own response headers, not this page. -->
+  <script src="https://chatbot-cdn-staging.carewarebd.com/widget.js" data-site-key="pk_live_ffe352bdac69167807de2ffadd51ffc9935fed1e3e22d7a2" data-chat-origin="https://chatbot-chat-staging.carewarebd.com" data-api-base="https://chatbot-api-staging.carewarebd.com" crossorigin="anonymous" async></script>
 </head>
 <body>
 
